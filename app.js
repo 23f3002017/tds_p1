@@ -173,8 +173,19 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.`;
 
-    fs.writeFileSync(path.join(repoPath, 'LICENSE'), licenseText);
-    fs.writeFileSync(path.join(repoPath, 'index.html'), html);
+    // Write LICENSE
+    const licensePath = path.join(repoPath, 'LICENSE');
+    fs.writeFileSync(licensePath, licenseText);
+    console.log('✅ LICENSE file created');
+
+    // Write index.html
+    const htmlPath = path.join(repoPath, 'index.html');
+    fs.writeFileSync(htmlPath, html);
+    console.log('✅ index.html file created');
+
+    // Verify files were written
+    if (!fs.existsSync(licensePath)) throw new Error('LICENSE file not written');
+    if (!fs.existsSync(htmlPath)) throw new Error('index.html file not written');
 
     const readme = `# ${task}
 
@@ -229,6 +240,7 @@ MIT License - See LICENSE file for full details
 *Generated automatically*`;
 
     fs.writeFileSync(path.join(repoPath, 'README.md'), readme);
+    console.log('✅ README.md file created');
 
     fs.writeFileSync(path.join(repoPath, '.gitignore'), `node_modules/
 .env
@@ -238,6 +250,7 @@ MIT License - See LICENSE file for full details
 .idea/
 *.log
 temp/`);
+    console.log('✅ .gitignore file created');
 
     const packageJson = {
       name: repoName,
@@ -249,6 +262,15 @@ temp/`);
       license: 'MIT'
     };
     fs.writeFileSync(path.join(repoPath, 'package.json'), JSON.stringify(packageJson, null, 2));
+    console.log('✅ package.json file created');
+
+    // Configure git locally for this repo
+    execSync('git config user.name "' + email + '"', { cwd: repoPath });
+    execSync('git config user.email "' + email + '"', { cwd: repoPath });
+
+    // Verify files exist before commit
+    const files = fs.readdirSync(repoPath);
+    console.log('📂 Files in repo:', files);
 
     // Commit
     execSync('git add .', { cwd: repoPath });
@@ -259,13 +281,14 @@ temp/`);
         GIT_AUTHOR_NAME: email, 
         GIT_AUTHOR_EMAIL: email, 
         GIT_COMMITTER_NAME: email, 
-        GIT_COMMITTER_EMAIL: email 
+        GIT_COMMITTER_EMAIL: email,
+        GIT_TERMINAL_PROMPT: '0'
       }
     });
 
     // Push with token in URL for Render compatibility
     const gitPushUrl = `https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${repoName}.git`;
-    execSync(`git push ${gitPushUrl} main`, { 
+    execSync(`git -c core.sshCommand="ssh -o StrictHostKeyChecking=no" push -u ${gitPushUrl} main`, { 
       cwd: repoPath,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     });
