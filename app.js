@@ -1,6 +1,3 @@
-// ============================================
-// STEP 1-3: API ENDPOINT + SECRET VERIFICATION
-// ============================================
 require('dotenv').config();
 
 const express = require('express');
@@ -15,8 +12,9 @@ app.use(express.json());
 
 // ============ CONFIG ============
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const AIPIPE_TOKEN = process.env.AIPIPE_TOKEN; // Your AIpipe token
+const AIPIPE_TOKEN = process.env.AIPIPE_TOKEN;
 const SHARED_SECRET = process.env.SHARED_SECRET || 'your-secret-from-google-form';
+const GITHUB_USERNAME = '23f3002017'; // Your GitHub username
 const TEMP_DIR = path.join(__dirname, 'temp-repos');
 const PORT = process.env.PORT || 3000;
 
@@ -31,19 +29,16 @@ app.post('/api/generate', async (req, res) => {
   try {
     console.log('📥 Received request:', req.body);
 
-    // STEP 2: Verify secret
     if (req.body.secret !== SHARED_SECRET) {
       console.error('❌ Invalid secret');
       return res.status(401).json({ error: 'Invalid secret' });
     }
 
-    // STEP 3: Send immediate 200 response
     res.status(200).json({ 
       status: 'Processing',
       message: 'Request received. Generating and deploying app...'
     });
 
-    // Continue processing in background
     processRequest(req.body).catch(err => {
       console.error('❌ Error processing request:', err);
     });
@@ -58,7 +53,6 @@ app.post('/api/generate', async (req, res) => {
 async function generateApp(brief, attachments, checks) {
   console.log('🤖 Generating app with AIpipe + OpenRouter...');
 
-  // Download attachments
   const downloadedAttachments = {};
   for (const att of attachments) {
     const base64Data = att.url.split(',')[1];
@@ -66,7 +60,6 @@ async function generateApp(brief, attachments, checks) {
     downloadedAttachments[att.name] = buffer.toString('utf-8');
   }
 
-  // Create prompt for Claude via AIpipe
   const attachmentContext = Object.entries(downloadedAttachments)
     .map(([name, content]) => `**File: ${name}**\n\`\`\`\n${content.substring(0, 500)}\n\`\`\``)
     .join('\n\n');
@@ -95,17 +88,11 @@ ${checksStr}
 **CRITICAL: Return ONLY the HTML code block wrapped in triple backticks, nothing else.**`;
 
   try {
-    // Call AIpipe endpoint (which proxies to OpenRouter)
     const response = await axios.post(
       'https://aipipe.org/openrouter/v1/chat/completions',
       {
-        model: 'openai/gpt-4o-mini', // Fast, cheap model
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
         max_tokens: 4000,
         temperature: 0.7
       },
@@ -120,7 +107,6 @@ ${checksStr}
 
     let html = response.data.choices[0].message.content;
 
-    // Extract HTML from markdown code blocks
     if (html.includes('```html')) {
       html = html.split('```html')[1].split('```')[0].trim();
     } else if (html.includes('```')) {
@@ -140,11 +126,9 @@ ${checksStr}
 async function createAndPushRepo(email, task, html, brief, checks) {
   console.log('📦 Creating GitHub repo...');
 
-  // Generate unique repo name
   const repoName = task.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   try {
-    // Create repo
     const repo = await octokit.repos.createForAuthenticatedUser({
       name: repoName,
       description: `Auto-generated: ${brief.substring(0, 60)}...`,
@@ -154,14 +138,20 @@ async function createAndPushRepo(email, task, html, brief, checks) {
 
     console.log(`✅ Repo created: ${repo.data.html_url}`);
 
-    // Clone the repo
     const repoPath = path.join(TEMP_DIR, repoName);
     if (fs.existsSync(repoPath)) {
       execSync(`rm -rf ${repoPath}`);
     }
 
-    execSync(`git clone ${repo.data.clone_url} ${repoPath}`, {
-      env: { ...process.env, GIT_AUTHOR_NAME: email, GIT_AUTHOR_EMAIL: email }
+    // Clone with token in URL for Render compatibility
+    const gitCloneUrl = `https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${repoName}.git`;
+    execSync(`git clone ${gitCloneUrl} ${repoPath}`, {
+      env: { 
+        ...process.env, 
+        GIT_AUTHOR_NAME: email, 
+        GIT_AUTHOR_EMAIL: email,
+        GIT_TERMINAL_PROMPT: '0'
+      }
     });
 
     // Add MIT License
@@ -184,11 +174,8 @@ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.`;
 
     fs.writeFileSync(path.join(repoPath, 'LICENSE'), licenseText);
-
-    // Add index.html
     fs.writeFileSync(path.join(repoPath, 'index.html'), html);
 
-    // Create comprehensive README
     const readme = `# ${task}
 
 ## Overview
@@ -239,11 +226,10 @@ Works in all modern browsers (Chrome, Firefox, Safari, Edge)
 MIT License - See LICENSE file for full details
 
 ---
-*Generated automatically on $(date -u +'%Y-%m-%dT%H:%M:%SZ')*`;
+*Generated automatically*`;
 
     fs.writeFileSync(path.join(repoPath, 'README.md'), readme);
 
-    // Add .gitignore to avoid secrets
     fs.writeFileSync(path.join(repoPath, '.gitignore'), `node_modules/
 .env
 .env.local
@@ -253,21 +239,18 @@ MIT License - See LICENSE file for full details
 *.log
 temp/`);
 
-    // Add minimal package.json (optional, for completeness)
     const packageJson = {
       name: repoName,
       version: '1.0.0',
       description: brief,
       main: 'index.html',
-      scripts: {
-        start: 'python -m http.server 8000'
-      },
+      scripts: { start: 'python -m http.server 8000' },
       author: email,
       license: 'MIT'
     };
     fs.writeFileSync(path.join(repoPath, 'package.json'), JSON.stringify(packageJson, null, 2));
 
-    // Commit and push
+    // Commit
     execSync('git add .', { cwd: repoPath });
     execSync(`git commit -m "Initial commit: Auto-generated app for ${task}"`, { 
       cwd: repoPath,
@@ -279,12 +262,17 @@ temp/`);
         GIT_COMMITTER_EMAIL: email 
       }
     });
-    execSync('git push origin main', { cwd: repoPath });
 
-    // Get the commit SHA
+    // Push with token in URL for Render compatibility
+    const gitPushUrl = `https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${repoName}.git`;
+    execSync(`git push ${gitPushUrl} main`, { 
+      cwd: repoPath,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    });
+
     const commitSha = execSync('git rev-parse HEAD', { cwd: repoPath }).toString().trim();
 
-    // Enable GitHub Pages via API
+    // Enable GitHub Pages
     try {
       await octokit.repos.update({
         owner: repo.data.owner.login,
@@ -298,7 +286,7 @@ temp/`);
         }
       });
     } catch (e) {
-      console.warn('⚠️ Could not update Pages settings via API (may need manual setup):', e.message);
+      console.warn('⚠️ Could not update Pages settings via API:', e.message);
     }
 
     const pagesUrl = `https://${repo.data.owner.login}.github.io/${repoName}/`;
@@ -323,7 +311,7 @@ temp/`);
 // ============ STEP 7-8: REPORT & RETRY ============
 async function reportResults(evaluationUrl, payload, attempt = 1) {
   const maxAttempts = 10;
-  const delays = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]; // seconds
+  const delays = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
 
   try {
     console.log(`📤 Attempt ${attempt}: Posting to ${evaluationUrl}...`);
@@ -345,7 +333,7 @@ async function reportResults(evaluationUrl, payload, attempt = 1) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
       return reportResults(evaluationUrl, payload, attempt + 1);
     } else {
-      console.error('❌ Max retries exceeded. Could not report results.');
+      console.error('❌ Max retries exceeded.');
       return false;
     }
   }
@@ -358,17 +346,12 @@ async function processRequest(request) {
 
     console.log(`\n🚀 Processing task: ${task} (round ${round})`);
 
-    // Generate app using AIpipe
     const html = await generateApp(brief, attachments || [], checks || []);
-
-    // Create repo and push
     const repoInfo = await createAndPushRepo(email, task, html, brief, checks);
 
-    // Wait for GitHub Pages to be ready
     console.log('⏳ Waiting 10 seconds for GitHub Pages to deploy...');
     await new Promise(resolve => setTimeout(resolve, 10000));
 
-    // Report results
     const payload = {
       email,
       task,
