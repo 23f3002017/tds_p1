@@ -362,6 +362,219 @@ async function reportResults(evaluationUrl, payload, attempt = 1) {
   }
 }
 
+// ============ ROUND 2: MODIFY EXISTING REPO ============
+async function modifyExistingRepo(email, task, brief, checks) {
+  console.log('📝 Modifying existing repo for Round 2...');
+
+  const repoName = task.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const repoPath = path.join(TEMP_DIR, repoName);
+
+  try {
+    // Get existing repo URL
+    const repos = await octokit.repos.listForAuthenticatedUser();
+    const existingRepo = repos.data.find(r => r.name === repoName);
+    
+    if (!existingRepo) {
+      throw new Error(`Repo ${repoName} not found`);
+    }
+
+    console.log(`✅ Found existing repo: ${existingRepo.html_url}`);
+
+    // Delete old clone if exists
+    if (fs.existsSync(repoPath)) {
+      execSync(`rm -rf ${repoPath}`);
+    }
+
+    // Clone the existing repo
+    const gitCloneUrl = `https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${repoName}.git`;
+    execSync(`git clone ${gitCloneUrl} ${repoPath}`, {
+      env: { 
+        ...process.env, 
+        GIT_AUTHOR_NAME: email, 
+        GIT_AUTHOR_EMAIL: email,
+        GIT_TERMINAL_PROMPT: '0'
+      }
+    });
+
+    console.log('✅ Cloned existing repo');
+
+    // Read existing HTML
+    const htmlPath = path.join(repoPath, 'index.html');
+    const existingHtml = fs.readFileSync(htmlPath, 'utf-8');
+
+    // Generate improved HTML based on brief
+    console.log('🤖 Improving app with AI...');
+    const improvedHtml = await improveApp(existingHtml, brief, checks);
+
+    // Write updated index.html
+    fs.writeFileSync(htmlPath, improvedHtml);
+    console.log('✅ Updated index.html');
+
+    // Update README.md with new requirements
+    const readmePath = path.join(repoPath, 'README.md');
+    const newReadme = `# ${task}
+
+## Overview
+${brief}
+
+## Updated Requirements Checklist (Round 2)
+${checks.map(c => `- [ ] ${c}`).join('\n')}
+
+## Setup
+1. Clone this repository:
+   \`\`\`bash
+   git clone ${existingRepo.clone_url}
+   cd ${repoName}
+   \`\`\`
+
+2. Open \`index.html\` in your web browser
+
+## Usage
+Live demo: https://${existingRepo.owner.login}.github.io/${repoName}/
+
+Open the page and interact with the application. All functionality is contained in the single HTML file.
+
+## File Structure
+- \`index.html\` - Complete application with inline CSS and JavaScript
+- \`LICENSE\` - MIT License
+- \`README.md\` - This file
+
+## Code Explanation
+This is a single-file HTML application auto-generated and improved using OpenRouter LLMs via AIpipe.
+
+**Key Features:**
+- Fully self-contained (no build step needed)
+- Responsive design
+- Accessible markup (ARIA labels)
+- Error handling
+- Browser-compatible (no external dependencies beyond CDN resources)
+
+## Technology Stack
+- HTML5
+- CSS3
+- Vanilla JavaScript (ES6+)
+- CDN resources (Bootstrap, etc. as needed)
+
+## Browser Compatibility
+Works in all modern browsers (Chrome, Firefox, Safari, Edge)
+
+## License
+MIT License - See LICENSE file for full details
+
+---
+*Generated and improved automatically (Round 2)*`;
+
+    fs.writeFileSync(readmePath, newReadme);
+    console.log('✅ Updated README.md');
+
+    // Configure git locally for this repo
+    execSync('git config user.name "' + email + '"', { cwd: repoPath });
+    execSync('git config user.email "' + email + '"', { cwd: repoPath });
+
+    // Commit and push
+    execSync('git add .', { cwd: repoPath });
+    execSync(`git commit -m "Round 2: Improved app - ${brief.substring(0, 50)}"`, { 
+      cwd: repoPath,
+      env: { 
+        ...process.env, 
+        GIT_AUTHOR_NAME: email, 
+        GIT_AUTHOR_EMAIL: email, 
+        GIT_COMMITTER_NAME: email, 
+        GIT_COMMITTER_EMAIL: email,
+        GIT_TERMINAL_PROMPT: '0'
+      }
+    });
+
+    const gitPushUrl = `https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${repoName}.git`;
+    execSync(`git push ${gitPushUrl} main`, { 
+      cwd: repoPath,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    });
+
+    console.log('✅ Pushed changes to GitHub');
+
+    const commitSha = execSync('git rev-parse HEAD', { cwd: repoPath }).toString().trim();
+    const pagesUrl = `https://${existingRepo.owner.login}.github.io/${repoName}/`;
+
+    console.log(`✅ Round 2 complete`);
+    console.log(`✅ Commit SHA: ${commitSha}`);
+
+    return {
+      repo_url: existingRepo.html_url,
+      commit_sha: commitSha,
+      pages_url: pagesUrl,
+      owner: existingRepo.owner.login
+    };
+
+  } catch (error) {
+    console.error('❌ Repo modification error:', error.message);
+    throw error;
+  }
+}
+
+// ============ IMPROVE EXISTING APP ============
+async function improveApp(existingHtml, brief, checks) {
+  console.log('🤖 Sending to AI for improvement...');
+
+  const checksStr = checks.map(c => `- ${c}`).join('\n');
+
+  const prompt = `You are an expert web developer. Improve the existing HTML application based on the new requirements.
+
+**Current HTML:**
+\`\`\`html
+${existingHtml.substring(0, 1500)}
+\`\`\`
+
+**New Requirements:**
+${brief}
+
+**New Checks (must pass all):**
+${checksStr}
+
+**Instructions:**
+1. Improve the existing code, don't rewrite from scratch
+2. Keep the same structure and style
+3. Add only the new features requested
+4. Ensure all checks pass
+5. Return ONLY the complete updated HTML code wrapped in triple backticks
+
+**CRITICAL: Return ONLY the HTML code block wrapped in triple backticks, nothing else.**`;
+
+  try {
+    const response = await axios.post(
+      'https://aipipe.org/openrouter/v1/chat/completions',
+      {
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 4000,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${AIPIPE_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    let html = response.data.choices[0].message.content;
+
+    if (html.includes('```html')) {
+      html = html.split('```html')[1].split('```')[0].trim();
+    } else if (html.includes('```')) {
+      html = html.split('```')[1].split('```')[0].trim();
+    }
+
+    console.log('✅ App improved successfully');
+    return html;
+
+  } catch (error) {
+    console.error('❌ AIpipe improvement error:', error.response?.data || error.message);
+    throw new Error(`Failed to improve app: ${error.message}`);
+  }
+}
+
 // ============ MAIN PROCESSOR ============
 async function processRequest(request) {
   try {
@@ -369,8 +582,18 @@ async function processRequest(request) {
 
     console.log(`\n🚀 Processing task: ${task} (round ${round})`);
 
-    const html = await generateApp(brief, attachments || [], checks || []);
-    const repoInfo = await createAndPushRepo(email, task, html, brief, checks);
+    let repoInfo;
+
+    if (round === 1) {
+      // Round 1: Create new app
+      const html = await generateApp(brief, attachments || [], checks || []);
+      repoInfo = await createAndPushRepo(email, task, html, brief, checks);
+    } else if (round === 2) {
+      // Round 2: Modify existing app
+      repoInfo = await modifyExistingRepo(email, task, brief, checks);
+    } else {
+      throw new Error(`Unknown round: ${round}`);
+    }
 
     console.log('⏳ Waiting 10 seconds for GitHub Pages to deploy...');
     await new Promise(resolve => setTimeout(resolve, 10000));
